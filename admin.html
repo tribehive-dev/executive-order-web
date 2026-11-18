@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Executive Order - Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600&family=Source+Serif+4:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--navy:#0a1730;--navy2:#12244a;--navy3:#1b3260;--gold:#c9a24a;--white:#f6f7fa;--mute:#9aa7c2;--bad:#e07a7a;--ok:#7ccf9b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--navy);color:var(--white);font:16px/1.5 "Public Sans",system-ui,sans-serif}
+h1,h2,h3{font-family:"Source Serif 4",Georgia,serif;margin:0 0 .5rem}
+h2{font-size:1.3rem}h3{font-size:1.05rem}
+.wrap{max-width:1000px;margin:0 auto;padding:1rem}
+header{display:flex;justify-content:space-between;align-items:center;padding:.75rem 1rem;border-bottom:1px solid var(--navy3)}
+.brand{font-family:"Source Serif 4",serif;font-weight:700;color:var(--gold)}
+.panel{background:var(--navy2);border:1px solid var(--navy3);border-radius:10px;padding:1rem;margin:.75rem 0}
+label{display:block;font-size:.85rem;color:var(--mute);margin:.6rem 0 .2rem}
+input,select{width:100%;padding:.7rem;border-radius:8px;border:1px solid var(--navy3);background:var(--navy);color:var(--white);font:inherit}
+input:focus,button:focus-visible{outline:2px solid var(--gold);outline-offset:1px}
+button{font:inherit;font-weight:600;padding:.6rem .9rem;border-radius:8px;border:1px solid var(--gold);background:var(--gold);color:var(--navy);cursor:pointer;min-height:44px}
+button.ghost{background:transparent;color:var(--gold)}
+button.danger{background:transparent;color:var(--bad);border-color:var(--bad)}
+button:disabled{opacity:.5}
+.tabs{display:flex;gap:.4rem;overflow-x:auto;padding-bottom:.25rem}
+.tabs button{background:transparent;color:var(--mute);border-color:var(--navy3);white-space:nowrap}
+.tabs button.on{color:var(--navy);background:var(--gold);border-color:var(--gold)}
+.msg{padding:.7rem;border-radius:8px;margin:.5rem 0}
+.msg.err{background:#3a1b25;color:var(--bad)}.msg.ok{background:#16301f;color:var(--ok)}
+.muted{color:var(--mute);font-size:.9rem}
+.row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}
+table{width:100%;border-collapse:collapse;font-size:.9rem}
+td,th{padding:.45rem .35rem;border-bottom:1px solid var(--navy3);text-align:left;vertical-align:top}
+.scroll{overflow-x:auto}
+.badge{display:inline-block;font-size:.72rem;padding:.05rem .45rem;border-radius:999px;border:1px solid var(--gold);color:var(--gold)}
+.warn{border-left:3px solid var(--gold);padding-left:.7rem}
+code{font-family:ui-monospace,monospace;font-size:.8rem;word-break:break-all}
+</style>
+</head>
+<body>
+<header><span class="brand">EXECUTIVE ORDER · ADMIN</span><span id="who"></span></header>
+<main class="wrap" id="app"><p class="muted">Loading…</p></main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const when = (d) => (d ? new Date(d).toLocaleString() : "");
+const app = $("#app");
+let sb, session = null, me = null, tab = "players", flash = null, opened = null, names = {}, msgsView = null;
+
+if (SUPABASE_URL.startsWith("PASTE")) { app.innerHTML = '<div class="panel">Setup needed: fill in config.js.</div>'; }
+else { init(); }
+
+async function init() {
+  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  session = (await sb.auth.getSession()).data.session;
+  sb.auth.onAuthStateChange((_e, s) => { const changed = s?.user?.id !== session?.user?.id; session = s; if (changed) start(); });
+  start();
+}
+const msg = () => { const f = flash; flash = null; return f ? `<div class="msg ${f.t}" role="alert">${esc(f.m)}</div>` : ""; };
+async function act(btn, fn) { if (btn) btn.disabled = true; try { await fn(); } catch (e) { flash = { t: "err", m: e.message || "Something went wrong." }; } finally { await render(); } }
+function ask(question, min = 15) {
+  const r = (prompt(`${question}\n(This is recorded in the audit log. At least ${min} characters.)`) || "").trim();
+  if (!r) return null;
+  if (r.length < min) { flash = { t: "err", m: `Reason must be at least ${min} characters.` }; render(); return null; }
+  return r;
+}
+
+async function start() {
+  if (!session) return loginView();
+  const { data } = await sb.from("profiles").select("display_name,role,is_owner,status").eq("id", session.user.id).maybeSingle();
+  me = data;
+  $("#who").innerHTML = `<span class="muted">${esc(me?.display_name || "")}${me?.is_owner ? " (owner)" : ""}</span> <button class="ghost" id="out">Sign out</button>`;
+  $("#out").onclick = () => sb.auth.signOut();
+  if (!me || (me.role !== "admin" && !me.is_owner)) { app.innerHTML = '<div class="panel"><h2>Administrators only</h2><p class="muted">This account does not have administrator access.</p></div>'; return; }
+  await render();
+}
+
+function loginView() {
+  $("#who").innerHTML = "";
+  app.innerHTML = `${msg()}<div class="panel"><h2>Administrator sign in</h2><form id="f">
+    <label>Email</label><input id="em" type="email" required autocomplete="email">
+    <label>Password</label><input id="pw" type="password" required autocomplete="current-password">
+    <div style="margin-top:1rem"><button type="submit">Sign in</button></div></form></div>`;
+  $("#f").onsubmit = async (e) => { e.preventDefault(); const b = e.submitter; b.disabled = true;
+    const { error } = await sb.auth.signInWithPassword({ email: $("#em").value.trim(), password: $("#pw").value });
+    if (error) { flash = { t: "err", m: error.message }; loginView(); } };
+}
+
+async function render() {
+  const tabs = [["players", "Players"], ["nations", "Nations"], ["reports", "Reports"], ["settings", "Settings"], ["ai", "AI usage"], ["audit", me.is_owner ? "Audit log (all)" : "My audit log"]];
+  app.innerHTML = `${msg()}<div class="tabs">${tabs.map(([k, l]) => `<button data-t="${k}" class="${tab === k ? "on" : ""}">${esc(l)}</button>`).join("")}</div><div id="body"><p class="muted">Loading…</p></div>`;
+  app.querySelectorAll("[data-t]").forEach((b) => (b.onclick = () => { tab = b.dataset.t; opened = null; msgsView = null; render(); }));
+  const view = { players: playersView, nations: nationsView, reports: reportsView, settings: settingsView, ai: aiView, audit: auditView }[tab];
+  try { await view($("#body")); } catch (e) { $("#body").innerHTML = `<div class="msg err">${esc(e.message)}</div>`; }
+}
+
+async function loadNames() {
+  const { data } = await sb.rpc("admin_list_players");
+  names = Object.fromEntries((data || []).map((p) => [p.id, p.display_name]));
+  return data || [];
+}
+const nm = (id) => esc(names[id] || String(id || "").slice(0, 8));
+
+// ---------- players ----------
+async function playersView(el) {
+  const players = await loadNames();
+  el.innerHTML = `<div class="panel scroll"><h2>Players</h2><table><tr><th>Name</th><th>Role</th><th>Status</th><th>Nations</th><th>Limit</th><th></th></tr>
+  ${players.map((p) => `<tr><td>${esc(p.display_name)}</td><td>${esc(p.role)}</td><td>${esc(p.status)}</td><td>${esc(p.worlds_owned)}</td><td>${p.max_worlds_override ?? "default"}</td>
+  <td>${p.id === session.user.id ? '<span class="muted">you</span>' : `<button class="${p.status === "active" ? "danger" : "ghost"}" data-st="${esc(p.id)}" data-to="${p.status === "active" ? "suspended" : "active"}">${p.status === "active" ? "Suspend" : "Reinstate"}</button> <button class="ghost" data-lim="${esc(p.id)}">Limit</button>`}</td></tr>`).join("")}</table>
+  <p class="muted">Every change here needs a reason and is recorded in the audit log.</p></div>`;
+  el.querySelectorAll("[data-st]").forEach((b) => (b.onclick = () => { const r = ask(`Reason to ${b.dataset.to === "suspended" ? "suspend" : "reinstate"} this player`); if (!r) return;
+    act(b, async () => { const { error } = await sb.rpc("admin_set_player_status", { p_user: b.dataset.st, p_status: b.dataset.to, p_reason: r }); if (error) throw error; flash = { t: "ok", m: "Player updated." }; }); }));
+  el.querySelectorAll("[data-lim]").forEach((b) => (b.onclick = () => {
+    const v = prompt("Nations this player may create (a number). Leave empty to use the default."); if (v === null) return;
+    const lim = v.trim() === "" ? null : Number(v.trim());
+    if (lim !== null && (!Number.isInteger(lim) || lim < 0 || lim > 1000)) { flash = { t: "err", m: "Enter a whole number from 0 to 1000." }; return render(); }
+    const r = ask("Reason for changing this player's nation limit"); if (!r) return;
+    act(b, async () => { const { error } = await sb.rpc("admin_set_creation_limit", { p_user: b.dataset.lim, p_limit: lim, p_reason: r }); if (error) throw error; flash = { t: "ok", m: "Limit updated." }; }); }));
+}
+
+// ---------- nations ----------
+async function nationsView(el) {
+  await loadNames();
+  if (opened) return openedView(el);
+  const { data, error } = await sb.rpc("admin_list_worlds"); if (error) throw error;
+  el.innerHTML = `<div class="panel scroll"><h2>Nations</h2><p class="muted warn">Private nation names stay hidden until you open them with a recorded reason.</p><table><tr><th>Name</th><th>Type</th><th>Owner</th><th>Players</th><th>State</th><th></th></tr>
+  ${data.map((w) => `<tr><td>${esc(w.name)}</td><td>${w.is_public ? "Public" : '<span class="badge">Private</span>'}</td><td>${esc(w.owner_name)}</td><td>${esc(w.member_count)}</td><td>${esc(w.moderation_state)}</td>
+  <td><button class="ghost" data-open="${esc(w.id)}">Open</button> <button class="${w.moderation_state === "normal" ? "danger" : "ghost"}" data-mod="${esc(w.id)}" data-to="${w.moderation_state === "normal" ? "suspended" : "normal"}">${w.moderation_state === "normal" ? "Suspend" : "Restore"}</button></td></tr>`).join("")}</table>
+  <p class="muted">Suspending hides a nation and blocks new joins. It never changes votes, results or political records.</p></div>`;
+  el.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => { const r = ask("Why do you need to open this nation?"); if (!r) return;
+    act(b, async () => { const { data: exp, error: e } = await sb.rpc("admin_open_nation", { p_world: b.dataset.open, p_reason: r }); if (e) throw e; opened = { id: b.dataset.open, until: exp }; }); }));
+  el.querySelectorAll("[data-mod]").forEach((b) => (b.onclick = () => { const r = ask("Reason for this moderation change"); if (!r) return;
+    act(b, async () => { const { error: e } = await sb.rpc("admin_set_nation_moderation", { p_world: b.dataset.mod, p_state: b.dataset.to, p_reason: r }); if (e) throw e; flash = { t: "ok", m: "Nation updated." }; }); }));
+}
+async function openedView(el) {
+  const id = opened.id;
+  const [w, pt, ch, hs, mb] = await Promise.all([
+    sb.from("worlds").select("name,is_public,status,data").eq("id", id).single(),
+    sb.from("parties").select("name,abbreviation,ideology").eq("world_id", id).order("name"),
+    sb.from("characters").select("name,kind,is_ai,party_id").eq("world_id", id).order("name"),
+    sb.from("world_history").select("title,game_year,created_at").eq("world_id", id).order("created_at", { ascending: false }).limit(30),
+    sb.from("world_members").select("user_id,role").eq("world_id", id),
+  ]);
+  const bad = [w, pt, ch, hs, mb].find((x) => x.error);
+  if (bad) { opened = null; throw new Error(bad.error.message + " (access may have expired; open it again)"); }
+  const cands = ch.data.filter((c) => c.kind === "candidate");
+  el.innerHTML = `<div class="panel"><button class="ghost" id="close">Close nation</button>
+  <h2>${esc(w.data.name)} ${w.data.is_public ? "" : '<span class="badge">Private</span>'}</h2>
+  <p class="muted warn">Read-only view. This access is recorded in the audit log and expires ${esc(when(opened.until))}. You cannot change votes, results or political records from here.</p>
+  <p>Status: ${esc(w.data.status)} · Players: ${mb.data.length} · Characters: ${ch.data.length}</p></div>
+  <div class="panel"><h3>Members</h3><p>${mb.data.map((m) => `${nm(m.user_id)} <span class="muted">(${esc(m.role)})</span>`).join(", ") || "None"}</p></div>
+  <div class="panel"><h3>Parties</h3>${pt.data.map((p) => `<p>${esc(p.name)} (${esc(p.abbreviation)}) <span class="muted">${esc(p.ideology)}</span></p>`).join("")}</div>
+  <div class="panel"><h3>Candidates</h3>${cands.map((c) => `<p>${esc(c.name)} <span class="muted">${c.is_ai ? "AI" : "Human"}</span></p>`).join("")}</div>
+  <div class="panel"><h3>Recent history</h3>${hs.data.map((h) => `<p>${esc(h.title)} <span class="muted">Year ${esc(h.game_year)} · ${esc(when(h.created_at))}</span></p>`).join("") || '<p class="muted">Nothing recorded.</p>'}</div>`;
+  $("#close").onclick = () => { opened = null; render(); };
+}
+
+// ---------- reports ----------
+async function reportsView(el) {
+  await loadNames();
+  const { data, error } = await sb.from("player_reports").select("*").order("created_at", { ascending: false }).limit(100); if (error) throw error;
+  el.innerHTML = `${msgsView ? `<div class="panel"><h3>Messages (access recorded)</h3>${msgsView.length ? msgsView.map((m) => `<p><strong>${nm(m.sender_id)}</strong> to ${nm(m.recipient_id)} <span class="muted">${esc(when(m.created_at))}</span><br>${esc(m.body)}</p>`).join("") : '<p class="muted">No messages found.</p>'}<button class="ghost" id="hide">Hide messages</button></div>` : ""}
+  <div class="panel scroll"><h2>Reports</h2><p class="muted warn">Message content can only be read for an open report, with a reason. Each reading is logged separately.</p>
+  <table><tr><th>Filed</th><th>Type</th><th>Who</th><th>Details</th><th>Status</th><th></th></tr>
+  ${data.map((r) => `<tr><td>${esc(when(r.created_at))}</td><td>${esc(r.category)}<br><span class="muted">${esc(r.source)}</span></td><td>By ${nm(r.reporter_id)}<br>About ${nm(r.reported_user_id)}</td><td>${esc(r.description)}</td><td>${esc(r.status)}${r.source === "admin" ? (r.approved_by ? "<br>approved" : "<br>needs owner approval") : ""}</td>
+  <td>${r.status !== "open" ? "" : `<button class="ghost" data-rd="${esc(r.id)}">Read messages</button> <button class="ghost" data-rs="${esc(r.id)}">Resolve</button>${me.is_owner && r.source === "admin" && !r.approved_by ? ` <button data-ap="${esc(r.id)}">Approve</button>` : ""}`}</td></tr>`).join("") || '<tr><td colspan="6" class="muted">No reports.</td></tr>'}</table></div>`;
+  const hide = $("#hide"); if (hide) hide.onclick = () => { msgsView = null; render(); };
+  el.querySelectorAll("[data-rd]").forEach((b) => (b.onclick = () => { const r = ask("Why must you read this conversation?"); if (!r) return;
+    act(b, async () => { const { data: m, error: e } = await sb.rpc("admin_read_messages", { p_report: b.dataset.rd, p_reason: r }); if (e) throw e; msgsView = m; }); }));
+  el.querySelectorAll("[data-rs]").forEach((b) => (b.onclick = () => { const n = ask("Resolution note", 10); if (!n) return;
+    act(b, async () => { const { error: e } = await sb.rpc("admin_resolve_report", { p_report: b.dataset.rs, p_note: n }); if (e) throw e; flash = { t: "ok", m: "Report resolved." }; }); }));
+  el.querySelectorAll("[data-ap]").forEach((b) => (b.onclick = () => { const r = ask("Reason for approving this incident"); if (!r) return;
+    act(b, async () => { const { error: e } = await sb.rpc("owner_approve_incident", { p_report: b.dataset.ap, p_reason: r }); if (e) throw e; flash = { t: "ok", m: "Incident approved." }; }); }));
+}
+
+// ---------- settings ----------
+const NUM = ["max_worlds_per_user", "max_members_per_world", "ai_monthly_token_cap_per_user"], BOOL = ["allow_world_creation", "ai_enabled"];
+async function settingsView(el) {
+  const { data, error } = await sb.from("app_settings").select("*").order("key"); if (error) throw error;
+  el.innerHTML = `<div class="panel"><h2>Game settings</h2><p class="muted warn">Changes take effect immediately and are recorded in the audit log.</p>
+  ${data.map((s) => `<label for="s_${esc(s.key)}">${esc(s.key)}</label><div class="row"><input id="s_${esc(s.key)}" value="${esc(s.value)}" style="flex:1"><button class="ghost" data-sk="${esc(s.key)}">Save</button></div>`).join("")}</div>`;
+  el.querySelectorAll("[data-sk]").forEach((b) => (b.onclick = () => {
+    const k = b.dataset.sk, v = document.getElementById("s_" + k).value.trim();
+    if (NUM.includes(k) && !/^\d+$/.test(v)) { flash = { t: "err", m: `${k} must be a whole number.` }; return render(); }
+    if (BOOL.includes(k) && !["true", "false"].includes(v)) { flash = { t: "err", m: `${k} must be true or false.` }; return render(); }
+    if (!v) { flash = { t: "err", m: "A value is required." }; return render(); }
+    act(b, async () => { const { error: e } = await sb.from("app_settings").upsert({ key: k, value: v }); if (e) throw e; flash = { t: "ok", m: `${k} saved.` }; }); }));
+}
+
+// ---------- AI usage ----------
+async function aiView(el) {
+  const { data, error } = await sb.rpc("admin_ai_usage_summary", { p_days: 30 }); if (error) throw error;
+  el.innerHTML = `<div class="panel scroll"><h2>AI usage (last 30 days)</h2><table><tr><th>Day</th><th>Feature</th><th>Calls</th><th>Input tokens</th><th>Output tokens</th></tr>
+  ${data.map((r) => `<tr><td>${esc(r.day)}</td><td>${esc(r.feature)}</td><td>${esc(r.calls)}</td><td>${esc(r.input_tokens)}</td><td>${esc(r.output_tokens)}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">No AI usage yet. Recording starts with Phase 2.</td></tr>'}</table></div>`;
+}
+
+// ---------- audit log ----------
+async function auditView(el) {
+  await loadNames();
+  const { data, error } = await sb.from("admin_audit_log").select("seq,admin_id,action,world_id,target_user_id,reason,details,created_at").order("seq", { ascending: false }).limit(200); if (error) throw error;
+  el.innerHTML = `<div class="panel"><h2>${me.is_owner ? "Audit log: all administrators" : "Your audit log"}</h2>
+  <p class="muted">Append-only and hash-chained. Entries cannot be edited or deleted.</p>
+  ${me.is_owner ? '<div class="row"><button class="ghost" id="ver">Verify chain</button><button class="ghost" id="head">Show latest hash</button></div><p id="vr" class="muted"></p>' : ""}</div>
+  <div class="panel scroll"><table><tr><th>#</th><th>When</th><th>Admin</th><th>Action</th><th>Reason</th><th>Target</th></tr>
+  ${data.map((r) => `<tr><td>${esc(r.seq)}</td><td>${esc(when(r.created_at))}</td><td>${nm(r.admin_id)}</td><td>${esc(r.action)}</td><td>${esc(r.reason)}</td><td>${r.target_user_id ? "Player " + nm(r.target_user_id) : ""}${r.world_id ? "<br><code>" + esc(r.world_id) + "</code>" : ""}</td></tr>`).join("") || '<tr><td colspan="6" class="muted">No entries.</td></tr>'}</table></div>`;
+  const ver = $("#ver");
+  if (ver) ver.onclick = async () => { const { data: bad, error: e } = await sb.rpc("verify_audit_chain"); $("#vr").textContent = e ? e.message : bad === null ? "Chain intact: no tampering detected." : `Chain BROKEN at entry #${bad}.`; };
+  const head = $("#head");
+  if (head) head.onclick = async () => { const { data: h, error: e } = await sb.rpc("audit_head"); $("#vr").textContent = e ? e.message : h && h[0] ? `Latest entry #${h[0].seq}, hash ${h[0].row_hash}. Save this somewhere safe.` : "The log is empty."; };
+}
+</script>
+</body>
+</html>
