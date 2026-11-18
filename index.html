@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Executive Order</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600&family=Source+Serif+4:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--navy:#0a1730;--navy2:#12244a;--navy3:#1b3260;--gold:#c9a24a;--white:#f6f7fa;--mute:#9aa7c2;--bad:#e07a7a;--ok:#7ccf9b}
+*{box-sizing:border-box}
+body{margin:0;background:var(--navy);color:var(--white);font:16px/1.5 "Public Sans",system-ui,sans-serif}
+h1,h2,h3{font-family:"Source Serif 4",Georgia,serif;margin:0 0 .5rem}
+h1{font-size:1.9rem}h2{font-size:1.35rem}h3{font-size:1.1rem}
+.wrap{max-width:960px;margin:0 auto;padding:1rem}
+header{display:flex;justify-content:space-between;align-items:center;padding:.75rem 1rem;border-bottom:1px solid var(--navy3)}
+.brand{font-family:"Source Serif 4",serif;font-weight:700;font-size:1.1rem;color:var(--gold)}
+.panel{background:var(--navy2);border:1px solid var(--navy3);border-radius:10px;padding:1rem;margin:.75rem 0}
+.grid{display:grid;gap:.75rem;grid-template-columns:repeat(auto-fill,minmax(250px,1fr))}
+label{display:block;font-size:.85rem;color:var(--mute);margin:.6rem 0 .2rem}
+input,select,textarea{width:100%;padding:.7rem;border-radius:8px;border:1px solid var(--navy3);background:var(--navy);color:var(--white);font:inherit}
+input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid var(--gold);outline-offset:1px}
+button{font:inherit;font-weight:600;padding:.7rem 1rem;border-radius:8px;border:1px solid var(--gold);background:var(--gold);color:var(--navy);cursor:pointer;min-height:44px}
+button.ghost{background:transparent;color:var(--gold)}
+button:disabled{opacity:.5;cursor:wait}
+.tabs{display:flex;gap:.4rem;overflow-x:auto;padding-bottom:.25rem}
+.tabs button{background:transparent;color:var(--mute);border-color:var(--navy3);white-space:nowrap}
+.tabs button.on{color:var(--navy);background:var(--gold);border-color:var(--gold)}
+.msg{padding:.7rem;border-radius:8px;margin:.5rem 0}
+.msg.err{background:#3a1b25;color:var(--bad)}.msg.ok{background:#16301f;color:var(--ok)}
+.muted{color:var(--mute);font-size:.9rem}
+.chip{display:inline-block;width:.8rem;height:.8rem;border-radius:50%;margin-right:.4rem;vertical-align:middle}
+.row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}
+table{width:100%;border-collapse:collapse;font-size:.92rem}
+td,th{padding:.45rem .3rem;border-bottom:1px solid var(--navy3);text-align:left}
+.scroll{overflow-x:auto}
+details summary{cursor:pointer;color:var(--gold)}
+.chk{display:flex;gap:.6rem;align-items:center;color:var(--white);font-size:1rem;margin:.5rem 0}.chk input{width:auto;min-width:1.2rem}
+.badge{display:inline-block;font-size:.75rem;padding:.1rem .5rem;border-radius:999px;border:1px solid var(--gold);color:var(--gold);margin-left:.4rem}
+code{font-family:ui-monospace,monospace;letter-spacing:.05em}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<header><span class="brand">THE EXECUTIVE ORDER</span><span id="who"></span></header>
+<main class="wrap" id="app"><p class="muted">Loading…</p></main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const hex = (c) => (/^#[0-9a-fA-F]{6}$/.test(c) ? c : "#888888");
+const fmt = (n) => Number(n).toLocaleString("en");
+const app = $("#app");
+let sb, session = null, profile = null, state = { worldId: null, tab: "nation", notice: null };
+
+if (SUPABASE_URL.startsWith("PASTE")) {
+  app.innerHTML = '<div class="panel"><h2>Setup needed</h2><p>Open <code>config.js</code> and paste your Supabase URL and anon key.</p></div>';
+} else { init(); }
+
+async function init() {
+  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const { data } = await sb.auth.getSession();
+  session = data.session;
+  sb.auth.onAuthStateChange((_e, s) => { const changed = (s?.user?.id) !== (session?.user?.id); session = s; if (changed) route(); });
+  route();
+}
+
+function notice(type, text) { state.notice = { type, text }; }
+function noticeHtml() { const n = state.notice; state.notice = null; return n ? `<div class="msg ${n.type}" role="alert">${esc(n.text)}</div>` : ""; }
+async function guard(btn, fn) { btn.disabled = true; try { await fn(); } catch (e) { notice("err", e.message || "Something went wrong."); await route(); } finally { btn.disabled = false; } }
+
+async function route() {
+  if (!session) { $("#who").innerHTML = ""; return authView(); }
+  const { data } = await sb.from("profiles").select("*").eq("id", session.user.id).maybeSingle();
+  profile = data;
+  $("#who").innerHTML = `<span class="muted">${esc(profile?.display_name || "")}</span> <button class="ghost" id="out">Sign out</button>`;
+  $("#out").onclick = async () => { await sb.auth.signOut(); state.worldId = null; };
+  return state.worldId ? worldView() : lobbyView();
+}
+
+// ---------- auth ----------
+function authView(mode = "in") {
+  app.innerHTML = `${noticeHtml()}
+  <h1>Become president.</h1><p class="muted">Join a fictional nation, win its election, then govern it.</p>
+  <div class="panel"><h2>${mode === "in" ? "Sign in" : "Create your account"}</h2>
+  <form id="f">
+    ${mode === "up" ? '<label>Display name</label><input id="dn" required minlength="2" maxlength="40" autocomplete="nickname">' : ""}
+    <label>Email</label><input id="em" type="email" required autocomplete="email">
+    <label>Password (8+ characters)</label><input id="pw" type="password" required minlength="8" autocomplete="${mode === "in" ? "current-password" : "new-password"}">
+    <div class="row" style="margin-top:1rem"><button type="submit">${mode === "in" ? "Sign in" : "Create account"}</button>
+    <button type="button" class="ghost" id="sw">${mode === "in" ? "New here? Create account" : "Have an account? Sign in"}</button></div>
+  </form></div>`;
+  $("#sw").onclick = () => authView(mode === "in" ? "up" : "in");
+  $("#f").onsubmit = (e) => { e.preventDefault(); guard(e.submitter, async () => {
+    const email = $("#em").value.trim(), password = $("#pw").value;
+    if (mode === "in") { const { error } = await sb.auth.signInWithPassword({ email, password }); if (error) throw error; }
+    else {
+      const { data, error } = await sb.auth.signUp({ email, password, options: { data: { display_name: $("#dn").value.trim() } } });
+      if (error) throw error;
+      if (!data.session) { notice("ok", "Account created. Check your email to confirm, then sign in."); return authView("in"); }
+    }
+  }); };
+}
+
+// ---------- lobby ----------
+async function lobbyView() {
+  app.innerHTML = `${noticeHtml()}
+  <h2>Nations</h2>
+  <div class="panel"><label for="q">Search nations</label><input id="q" type="search" maxlength="60" placeholder="Name of a nation" value="${esc(state.q || "")}">
+  <label for="sc">Show</label><select id="sc"><option value="all">All nations I can see</option><option value="mine">Only my nations</option></select></div>
+  <div class="grid" id="list"><p class="muted">Loading…</p></div>
+  <div class="panel"><h3>Create a nation</h3><p class="muted">A new fictional country is generated for you. Public nations appear in the list; private nations are invitation-only.</p>
+  <label class="chk"><input type="checkbox" id="priv"> Make it private (invitation only)</label>
+  <div style="margin-top:.75rem"><button id="gen">Generate a new nation</button></div></div>
+  <div class="panel"><h3>Have an invite code?</h3><label for="ic">Invite code</label><input id="ic" maxlength="24" autocapitalize="characters" autocomplete="off">
+  <div style="margin-top:.75rem"><button id="jc" class="ghost">Join with code</button></div></div>`;
+
+  const sc = $("#sc"); sc.value = state.scope || "all";
+  let ticket = 0, timer;
+  const card = (w) => `<div class="panel"><h3>${esc(w.name)}${w.is_public ? "" : '<span class="badge">Private</span>'}</h3>
+    <p class="muted">Capital: ${esc(w.capital)} · ${esc(w.legislature)} legislature<br>${esc(w.member_count)} player(s) · ${esc(w.status)}</p>
+    <button data-w="${esc(w.id)}" data-j="${w.is_member ? 0 : 1}" class="${w.is_member ? "" : "ghost"}">${w.is_member ? "Enter nation" : "Join nation"}</button></div>`;
+  async function load() {
+    const my = ++ticket; state.q = $("#q").value; state.scope = sc.value;
+    const { data, error } = await sb.rpc("browse_worlds", { p_search: state.q, p_scope: state.scope });
+    const list = $("#list"); if (my !== ticket || !list) return;
+    if (error) { list.innerHTML = `<div class="msg err">${esc(error.message)}</div>`; return; }
+    list.innerHTML = data.length ? data.map(card).join("") : '<p class="muted">No nations match. Try another search, or generate a new nation below.</p>';
+    list.querySelectorAll("button[data-w]").forEach((b) => (b.onclick = () => guard(b, async () => {
+      if (b.dataset.j === "1") { const { error: e2 } = await sb.rpc("join_world", { p_world_id: b.dataset.w }); if (e2) throw e2; }
+      state.worldId = b.dataset.w; state.tab = "nation"; await route();
+    })));
+  }
+  $("#q").oninput = () => { clearTimeout(timer); timer = setTimeout(load, 300); };
+  sc.onchange = load;
+  load();
+
+  $("#gen").onclick = (e) => { const btn = e.currentTarget; guard(btn, async () => {
+    btn.textContent = "Founding nation…";
+    const { data, error } = await sb.functions.invoke("generate-world", { body: { is_public: !$("#priv").checked } });
+    if (error) { let m = error.message; try { m = (await error.context.json()).error || m; } catch {} throw new Error(m); }
+    state.worldId = data.world_id; state.tab = "nation"; notice("ok", `${data.name} has been founded${data.is_public ? "" : " as a private nation"}.`); await route();
+  }); };
+  $("#jc").onclick = (e) => {
+    const code = $("#ic").value.trim();
+    if (!code) { notice("err", "Enter an invite code."); return lobbyView(); }
+    guard(e.currentTarget, async () => {
+      const { data, error } = await sb.rpc("join_by_invite", { p_code: code });
+      if (error) throw error; state.worldId = data; state.tab = "nation"; await route();
+    });
+  };
+}
+
+// ---------- nation ----------
+function flagSvg(f) {
+  const [a, b, c] = (f?.colours || []).map(hex); const p = f?.pattern;
+  const body = p === "vertical" ? `<rect width="40" height="80" fill="${a}"/><rect x="40" width="40" height="80" fill="${b}"/><rect x="80" width="40" height="80" fill="${c}"/>`
+    : p === "cross" ? `<rect width="120" height="80" fill="${a}"/><rect y="30" width="120" height="20" fill="${b}"/><rect x="50" width="20" height="80" fill="${b}"/>`
+    : p === "diagonal" ? `<rect width="120" height="80" fill="${a}"/><polygon points="0,80 120,0 120,80" fill="${b}"/><circle cx="85" cy="55" r="9" fill="${c}"/>`
+    : `<rect width="120" height="27" fill="${a}"/><rect y="27" width="120" height="26" fill="${b}"/><rect y="53" width="120" height="27" fill="${c}"/>`;
+  return `<svg viewBox="0 0 120 80" width="120" height="80" role="img" aria-label="National flag" style="border:1px solid var(--navy3);border-radius:4px">${body}</svg>`;
+}
+
+async function worldView() {
+  const id = state.worldId;
+  const [w, rg, cs, pt, ch, hs, pr, mr, iv] = await Promise.all([
+    sb.from("worlds").select("*").eq("id", id).single(),
+    sb.from("regions").select("*").eq("world_id", id).order("name"),
+    sb.from("constituencies").select("id,region_id,name,population").eq("world_id", id),
+    sb.from("parties").select("*").eq("world_id", id).order("name"),
+    sb.from("characters").select("*").eq("world_id", id).order("name"),
+    sb.from("world_history").select("*").eq("world_id", id).order("created_at", { ascending: false }).limit(100),
+    sb.from("presidencies").select("*").eq("world_id", id).order("term_start_year", { ascending: false }),
+    sb.from("world_members").select("role").eq("world_id", id).eq("user_id", session.user.id).maybeSingle(),
+    sb.from("world_invites").select("*").eq("world_id", id).order("created_at", { ascending: false }),
+  ]);
+  const err = [w, rg, cs, pt, ch, hs, pr, mr, iv].find((x) => x.error);
+  if (err) { state.worldId = null; notice("err", err.error.message); return lobbyView(); }
+  const world = w.data, regions = rg.data, parties = pt.data, chars = ch.data, d = world.data, k = d.constitution;
+  const me = chars.find((c) => c.owner_id === session.user.id && c.kind === "candidate");
+  const partyById = Object.fromEntries(parties.map((p) => [p.id, p]));
+  const regionById = Object.fromEntries(regions.map((r) => [r.id, r]));
+  const isOwner = mr.data?.role === "owner";
+  const tabs = [["nation", "Nation"], ["states", "States"], ["parties", "Parties"], ["candidates", "Candidates"], ["history", "History"], ["me", me ? "My campaign" : "Run for president"]];
+  if (isOwner) tabs.push(["invite", "Invites"]);
+  if (state.tab === "invite" && !isOwner) state.tab = "nation";
+
+  let body = "";
+  if (state.tab === "nation") {
+    const pop = regions.reduce((s, r) => s + r.population, 0), vot = regions.reduce((s, r) => s + r.registered_voters, 0);
+    body = `<div class="panel row">${flagSvg(d.flag)}<div><h2>${esc(d.country)}</h2><p class="muted">Capital ${esc(d.capital)} · Currency: ${esc(d.currency?.name)} (${esc(d.currency?.code)})</p>
+      <p>Population ${fmt(pop)} · Registered voters ${fmt(vot)}</p></div></div>
+    <div class="panel"><h3>Constitution</h3><ul>
+      <li>Presidential term: ${esc(k.term_years)} years, limit ${esc(k.term_limit)} term(s)</li>
+      <li>Legislature: ${esc(k.legislature)} — ${esc((k.chambers || []).join(" and "))}</li>
+      <li>Electoral system: ${k.electoral_system === "two_round" ? "Two-round majority" : "Plurality with regional spread"}</li>
+      <li>${esc(k.spread_rule)}</li><li>New parties: ${k.new_parties_allowed ? "permitted" : "not permitted"}</li></ul>
+      <details><summary>Presidential powers and checks</summary><ul>${(k.president_powers || []).map((x) => `<li>${esc(x)}</li>`).join("")}${(k.checks || []).map((x) => `<li class="muted">${esc(x)}</li>`).join("")}</ul></details></div>
+    <div class="panel"><h3>${esc(d.anthem?.title)}</h3><p class="muted">National anthem</p>${(d.anthem?.verses || []).map((v) => `<p>${v.map(esc).join("<br>")}</p>`).join("")}</div>`;
+  } else if (state.tab === "states") {
+    body = `<div class="panel scroll"><table><tr><th>State</th><th>Population</th><th>Voters</th><th>Economy</th></tr>${regions.map((r) => `<tr><td>${esc(r.name)}<div class="muted">${cs.data.filter((c) => c.region_id === r.id).map((c) => esc(c.name)).join(", ")}</div></td><td>${fmt(r.population)}</td><td>${fmt(r.registered_voters)}</td><td>${esc(r.economic_profile)}</td></tr>`).join("")}</table></div>`;
+  } else if (state.tab === "parties") {
+    body = `<div class="grid">${parties.map((p) => `<div class="panel" style="border-top:3px solid ${hex(p.colour)}"><h3><span class="chip" style="background:${hex(p.colour)}"></span>${esc(p.name)} (${esc(p.abbreviation)})</h3><p class="muted">${esc(p.ideology)} · Symbol: ${esc(p.symbol)}</p><p>${esc(p.philosophy)}</p></div>`).join("")}</div>
+    ${k.new_parties_allowed && world.status === "setup" ? `<div class="panel"><h3>Found a new party</h3><form id="pf">
+      <label>Party name</label><input id="pn" required minlength="3" maxlength="60">
+      <label>Abbreviation (2–6 letters)</label><input id="pa" required minlength="2" maxlength="6">
+      <label>Ideology</label><input id="pi" maxlength="40" placeholder="e.g. Green liberal">
+      <label>Philosophy</label><textarea id="pp" required minlength="10" maxlength="400" rows="3"></textarea>
+      <label>Colour</label><input id="pc" type="color" value="#c9a24a"><label>Symbol</label><input id="ps" maxlength="30" placeholder="e.g. Lantern">
+      <div style="margin-top:1rem"><button type="submit">Found party</button></div></form></div>` : ""}`;
+  } else if (state.tab === "candidates") {
+    const cands = chars.filter((c) => c.kind === "candidate");
+    body = `<div class="grid">${cands.map((c) => `<div class="panel" style="border-top:3px solid ${hex(partyById[c.party_id]?.colour)}"><h3>${esc(c.name)}</h3><p class="muted">${c.is_ai ? "AI candidate" : "Human player"} · ${esc(partyById[c.party_id]?.name || "Independent")}</p>
+      <p>${esc(c.background)}. ${esc(c.personality)}.</p><p class="muted">Strength: ${esc(c.strengths)}<br>Weakness: ${esc(c.weaknesses)}</p></div>`).join("")}</div>
+    <h3>Journalists</h3><div class="panel">${chars.filter((c) => c.kind === "journalist").map((c) => `<p>${esc(c.name)} <span class="muted">— ${esc(regionById[c.region_id]?.name || "")}</span></p>`).join("")}</div>`;
+  } else if (state.tab === "history") {
+    const presidents = pr.data || [], events = hs.data || [];
+    body = `<div class="panel"><h3>Presidents of ${esc(d.country)}</h3>${presidents.length ? presidents.map((p) => `<p>${esc(p.president_name)} <span class="muted">${esc(p.party_name || "")} · year ${esc(p.term_start_year)}${p.term_end_year ? "–" + esc(p.term_end_year) : " – present"}</span></p>`).join("") : '<p class="muted">No president has held office yet. The first election decides this.</p>'}</div>
+    <div class="panel"><h3>National record</h3>${events.map((e) => `<p><strong>${esc(e.title)}</strong><br><span class="muted">Year ${esc(e.game_year)} · ${esc(new Date(e.created_at).toLocaleDateString())}</span></p>`).join("") || '<p class="muted">Nothing recorded yet.</p>'}</div>`;
+  } else if (state.tab === "invite") {
+    const rows = (iv.data || []).map((i) => { const live = !i.revoked && new Date(i.expires_at) > new Date() && i.uses < i.max_uses;
+      return `<tr><td><code>${esc(i.code)}</code></td><td>${esc(i.uses)}/${esc(i.max_uses)}</td><td>${esc(new Date(i.expires_at).toLocaleDateString())}</td><td>${i.revoked ? "Revoked" : live ? "Active" : "Expired"}</td><td>${live ? `<button class="ghost" data-cp="${esc(i.code)}">Copy</button> <button class="ghost" data-rv="${esc(i.id)}">Revoke</button>` : ""}</td></tr>`; }).join("");
+    body = `<div class="panel"><h3>Invite players</h3><p class="muted">Anyone with a code can join this nation. ${world.is_public ? "" : "This nation is private, so a code is the only way in."}</p>
+      <form id="invf"><label>Maximum uses (1–500)</label><input id="imu" type="number" min="1" max="500" value="10" required>
+      <label>Valid for days (1–30)</label><input id="idy" type="number" min="1" max="30" value="7" required>
+      <div style="margin-top:1rem"><button type="submit">Create invite code</button></div></form></div>
+      <div class="panel scroll"><table><tr><th>Code</th><th>Used</th><th>Expires</th><th>Status</th><th></th></tr>${rows || '<tr><td colspan="5" class="muted">No invites yet.</td></tr>'}</table></div>`;
+  } else {
+    body = me ? `<div class="panel"><h2>${esc(me.name)}</h2><p class="muted">Candidate, ${esc(partyById[me.party_id]?.name)}</p><p>${esc(me.background)}</p>
+      <p class="muted">Campaign tools (speeches, debates, journalists) arrive in Phase 2. Your registration is saved.</p></div>`
+      : world.status !== "setup" ? `<div class="panel">Candidate registration is closed.</div>`
+      : `<div class="panel"><h2>Register as a presidential candidate</h2><form id="cf">
+        <label>Candidate name</label><input id="cn" required minlength="3" maxlength="60">
+        <label>Party</label><select id="cp" required>${parties.filter((p) => !chars.some((c) => c.party_id === p.id && c.owner_id)).map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("")}</select>
+        <p class="muted">Choosing a party replaces its AI candidate.</p>
+        <label>Background</label><textarea id="cb" maxlength="400" rows="2" placeholder="e.g. Former governor and farmer"></textarea>
+        <label>Leadership style</label><input id="cl" maxlength="200" placeholder="e.g. Calm and methodical">
+        <div style="margin-top:1rem"><button type="submit">Register candidacy</button></div></form></div>`;
+  }
+
+  app.innerHTML = `${noticeHtml()}<div class="row" style="justify-content:space-between"><button class="ghost" id="back">All nations</button><span class="muted">${world.is_public ? "Public" : "Private"} · ${esc(world.status)}${isOwner ? " · You own this nation" : ""}</span>${isOwner ? "" : '<button class="ghost" id="leave">Leave nation</button>'}</div>
+    <div class="tabs" role="tablist">${tabs.map(([k2, l]) => `<button role="tab" data-t="${k2}" class="${state.tab === k2 ? "on" : ""}">${esc(l)}</button>`).join("")}</div>${body}`;
+  $("#back").onclick = () => { state.worldId = null; route(); };
+  app.querySelectorAll("[data-t]").forEach((b) => (b.onclick = () => { state.tab = b.dataset.t; worldView(); }));
+  const lv = $("#leave");
+  if (lv) lv.onclick = (e) => { if (!confirm("Leave this nation? If you are a candidate, your candidate becomes AI-controlled.")) return;
+    guard(e.currentTarget, async () => { const { error } = await sb.rpc("leave_world", { p_world: id }); if (error) throw error; state.worldId = null; notice("ok", "You left the nation."); await route(); }); };
+  const invf = $("#invf");
+  if (invf) invf.onsubmit = (e) => { e.preventDefault(); guard(e.submitter, async () => {
+    const { data, error } = await sb.rpc("create_invite", { p_world: id, p_max_uses: Number($("#imu").value), p_days: Number($("#idy").value) });
+    if (error) throw error; notice("ok", `Invite code created: ${data}`); await worldView(); }); };
+  app.querySelectorAll("[data-rv]").forEach((b) => (b.onclick = () => guard(b, async () => {
+    const { error } = await sb.rpc("revoke_invite", { p_invite: b.dataset.rv }); if (error) throw error; notice("ok", "Invite revoked."); await worldView(); })));
+  app.querySelectorAll("[data-cp]").forEach((b) => (b.onclick = async () => { try { await navigator.clipboard.writeText(b.dataset.cp); b.textContent = "Copied"; } catch { b.textContent = b.dataset.cp; } }));
+  const pf = $("#pf"), cf = $("#cf");
+  if (pf) pf.onsubmit = (e) => { e.preventDefault(); guard(e.submitter, async () => {
+    const { error } = await sb.rpc("create_party", { p_world_id: id, p_name: $("#pn").value, p_abbr: $("#pa").value, p_colour: $("#pc").value, p_ideology: $("#pi").value, p_philosophy: $("#pp").value, p_symbol: $("#ps").value });
+    if (error) throw error; notice("ok", "Party founded."); await worldView(); }); };
+  if (cf) cf.onsubmit = (e) => { e.preventDefault(); guard(e.submitter, async () => {
+    const { error } = await sb.rpc("create_candidate", { p_world_id: id, p_party_id: $("#cp").value, p_name: $("#cn").value, p_background: $("#cb").value, p_personality: $("#cl").value });
+    if (error) throw error; notice("ok", "You are now a presidential candidate."); state.tab = "me"; await worldView(); }); };
+}
+</script>
+</body>
+</html>
