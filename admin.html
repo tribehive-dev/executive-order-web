@@ -93,10 +93,10 @@ function loginView() {
 }
 
 async function render() {
-  const tabs = [["players", "Players"], ["nations", "Nations"], ["reports", "Reports"], ["settings", "Settings"], ["ai", "AI usage"], ["audit", me.is_owner ? "Audit log (all)" : "My audit log"]];
+  const tabs = [["players", "Players"], ["nations", "Nations"], ["reports", "Reports"], ["settings", "Settings"], ["plans", "Plans"], ["ai", "AI usage"], ["audit", me.is_owner ? "Audit log (all)" : "My audit log"]];
   app.innerHTML = `${msg()}<div class="tabs">${tabs.map(([k, l]) => `<button data-t="${k}" class="${tab === k ? "on" : ""}">${esc(l)}</button>`).join("")}</div><div id="body"><p class="muted">Loading…</p></div>`;
   app.querySelectorAll("[data-t]").forEach((b) => (b.onclick = () => { tab = b.dataset.t; opened = null; msgsView = null; render(); }));
-  const view = { players: playersView, nations: nationsView, reports: reportsView, settings: settingsView, ai: aiView, audit: auditView }[tab];
+  const view = { players: playersView, nations: nationsView, reports: reportsView, settings: settingsView, plans: plansView, ai: aiView, audit: auditView }[tab];
   try { await view($("#body")); } catch (e) { $("#body").innerHTML = `<div class="msg err">${esc(e.message)}</div>`; }
 }
 
@@ -200,6 +200,61 @@ async function settingsView(el) {
     if (BOOL.includes(k) && !["true", "false"].includes(v)) { flash = { t: "err", m: `${k} must be true or false.` }; return render(); }
     if (!v) { flash = { t: "err", m: "A value is required." }; return render(); }
     act(b, async () => { const { error: e } = await sb.from("app_settings").upsert({ key: k, value: v }); if (e) throw e; flash = { t: "ok", m: `${k} saved.` }; }); }));
+}
+
+// ---------- plans, features, promotions ----------
+const CUR = ["NGN", "USD", "GBP", "EUR", "GHS", "KES", "ZAR"];
+const money = (minor, cur) => (minor == null ? "not set" : `${(minor / 100).toLocaleString("en", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${cur || ""}`.trim());
+const friendly = (e) => { const m = e.message || ""; return /plans_active_needs_price/.test(m) ? "Set a price above zero and a currency before activating a plan."
+  : /plans_currency_format/.test(m) ? "Use a three-letter currency code." : /promotions_code_format/.test(m) ? "Promo codes use 3 to 20 capital letters or digits."
+  : /promotions_dates/.test(m) ? "The end date must be after the start date." : /duplicate key/.test(m) ? "That code already exists." : m; };
+async function plansView(el) {
+  const [pl, ft, pf, pr] = await Promise.all([
+    sb.from("plans").select("*").order("interval"), sb.from("features").select("*").order("label"),
+    sb.from("plan_features").select("*"), sb.from("promotions").select("*").order("code"),
+  ]);
+  const bad = [pl, ft, pf, pr].find((x) => x.error); if (bad) throw bad.error;
+  const plans = pl.data, feats = ft.data, incl = new Set(pf.data.map((x) => x.plan_id + "|" + x.feature_key));
+  const mo = plans.find((p) => p.interval === "month"), yr = plans.find((p) => p.interval === "year");
+  const eff = mo && yr && mo.price_minor > 0 && yr.price_minor > 0 && mo.currency === yr.currency
+    ? `Annual works out to ${money(Math.round(yr.price_minor / 12), yr.currency)} a month, a saving of ${Math.round((1 - yr.price_minor / 12 / mo.price_minor) * 100)}% against paying monthly.` : "Set both prices in the same currency to see the annual saving.";
+  el.innerHTML = `<div class="panel"><h2>Subscription plans</h2><p class="muted warn">Prices are data you control. Nothing is charged yet: payments arrive with Phase 4. Every change is recorded in the audit log.</p><p class="muted">${esc(eff)}</p></div>
+  ${plans.map((p) => `<div class="panel"><h3>${esc(p.name)} ${p.active ? '<span class="badge">Active</span>' : '<span class="muted">(inactive)</span>'}</h3>
+    <p class="muted">Billed every ${p.interval === "month" ? "month" : "year"} · current price: ${esc(money(p.price_minor, p.currency))}</p>
+    <label for="pp_${esc(p.id)}">Price (for example 3500 or 4.99)</label><input id="pp_${esc(p.id)}" inputmode="decimal" value="${p.price_minor == null ? "" : esc((p.price_minor / 100).toFixed(2))}">
+    <label for="pc_${esc(p.id)}">Currency</label><select id="pc_${esc(p.id)}">${CUR.map((c) => `<option value="${c}" ${c === (p.currency || "NGN") ? "selected" : ""}>${c}</option>`).join("")}</select>
+    <div class="row" style="margin-top:.75rem"><button data-sp="${esc(p.id)}">Save price</button><button class="${p.active ? "danger" : "ghost"}" data-ta="${esc(p.id)}" data-to="${p.active ? "false" : "true"}">${p.active ? "Deactivate" : "Activate"}</button></div></div>`).join("")}
+  <div class="panel scroll"><h3>Premium features</h3><p class="muted">"Available" switches a feature on or off for everyone. The plan columns choose what each plan includes.</p>
+  <table><tr><th>Feature</th><th>Available</th>${plans.map((p) => `<th>${esc(p.interval === "month" ? "Monthly" : "Annual")}</th>`).join("")}</tr>
+  ${feats.map((f) => `<tr><td>${esc(f.label)}</td><td><input type="checkbox" style="width:auto" data-fa="${esc(f.key)}" ${f.active ? "checked" : ""}></td>${plans.map((p) => `<td><input type="checkbox" style="width:auto" data-fp="${esc(p.id)}" data-fk="${esc(f.key)}" ${incl.has(p.id + "|" + f.key) ? "checked" : ""}></td>`).join("")}</tr>`).join("")}</table></div>
+  <div class="panel scroll"><h3>Promotions</h3>
+  <table><tr><th>Code</th><th>Discount</th><th>Runs</th><th>Status</th><th></th></tr>${pr.data.map((x) => `<tr><td><code>${esc(x.code)}</code></td><td>${esc(x.percent_off)}%</td><td>${x.starts_at ? esc(new Date(x.starts_at).toLocaleDateString()) : "any time"} to ${x.ends_at ? esc(new Date(x.ends_at).toLocaleDateString()) : "no end"}</td><td>${x.active ? "Active" : "Off"}</td><td><button class="ghost" data-pa="${esc(x.id)}" data-to="${x.active ? "false" : "true"}">${x.active ? "Turn off" : "Turn on"}</button></td></tr>`).join("") || '<tr><td colspan="5" class="muted">No promotions yet.</td></tr>'}</table>
+  <form id="promof"><label for="pm_c">New code (3 to 20 capital letters or digits)</label><input id="pm_c" required maxlength="20" autocapitalize="characters">
+  <label for="pm_p">Percent off (1 to 100)</label><input id="pm_p" inputmode="numeric" required>
+  <label for="pm_s">Starts (optional)</label><input id="pm_s" type="date"><label for="pm_e">Ends (optional)</label><input id="pm_e" type="date">
+  <div style="margin-top:1rem"><button type="submit">Create promotion (starts off)</button></div></form></div>`;
+
+  el.querySelectorAll("[data-sp]").forEach((b) => (b.onclick = () => {
+    const id = b.dataset.sp, raw = document.getElementById("pp_" + id).value.trim().replace(",", "."), x = Number(raw), cur = document.getElementById("pc_" + id).value;
+    if (!raw || !Number.isFinite(x) || x <= 0 || x > 10000000) { flash = { t: "err", m: "Enter a price above zero, for example 3500 or 4.99." }; return render(); }
+    const plan = plans.find((p) => p.id === id);
+    if (plan.active && !confirm("This plan is active. Changing the price affects new subscribers from now on. Continue?")) return;
+    act(b, async () => { const { error } = await sb.from("plans").update({ price_minor: Math.round(x * 100), currency: cur }).eq("id", id); if (error) throw new Error(friendly(error)); flash = { t: "ok", m: "Price saved." }; }); }));
+  el.querySelectorAll("[data-ta]").forEach((b) => (b.onclick = () => act(b, async () => {
+    const { error } = await sb.from("plans").update({ active: b.dataset.to === "true" }).eq("id", b.dataset.ta); if (error) throw new Error(friendly(error)); flash = { t: "ok", m: "Plan updated." }; })));
+  el.querySelectorAll("[data-fa]").forEach((b) => (b.onchange = () => act(b, async () => {
+    const { error } = await sb.from("features").update({ active: b.checked }).eq("key", b.dataset.fa); if (error) throw new Error(friendly(error)); flash = { t: "ok", m: "Feature updated." }; })));
+  el.querySelectorAll("[data-fp]").forEach((b) => (b.onchange = () => act(b, async () => {
+    const r = b.checked ? await sb.from("plan_features").insert({ plan_id: b.dataset.fp, feature_key: b.dataset.fk }) : await sb.from("plan_features").delete().eq("plan_id", b.dataset.fp).eq("feature_key", b.dataset.fk);
+    if (r.error) throw new Error(friendly(r.error)); flash = { t: "ok", m: "Plan features updated." }; })));
+  el.querySelectorAll("[data-pa]").forEach((b) => (b.onclick = () => act(b, async () => {
+    const { error } = await sb.from("promotions").update({ active: b.dataset.to === "true" }).eq("id", b.dataset.pa); if (error) throw new Error(friendly(error)); flash = { t: "ok", m: "Promotion updated." }; })));
+  const pf2 = $("#promof");
+  if (pf2) pf2.onsubmit = (e) => { e.preventDefault();
+    const code = $("#pm_c").value.trim().toUpperCase(), pct = Number($("#pm_p").value), s = $("#pm_s").value, en = $("#pm_e").value;
+    if (!/^[A-Z0-9]{3,20}$/.test(code)) { flash = { t: "err", m: "Promo codes use 3 to 20 capital letters or digits." }; return render(); }
+    if (!Number.isInteger(pct) || pct < 1 || pct > 100) { flash = { t: "err", m: "Percent off must be a whole number from 1 to 100." }; return render(); }
+    act(e.submitter, async () => { const { error } = await sb.from("promotions").insert({ code, percent_off: pct, starts_at: s || null, ends_at: en || null, active: false }); if (error) throw new Error(friendly(error)); flash = { t: "ok", m: "Promotion created (it starts switched off)." }; }); };
 }
 
 // ---------- AI usage ----------
