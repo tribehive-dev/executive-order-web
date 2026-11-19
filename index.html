@@ -199,7 +199,7 @@ function flagSvg(f) {
 
 async function worldView() {
   const id = state.worldId;
-  const [w, rg, cs, pt, ch, hs, pr, mr, iv] = await Promise.all([
+  const [w, rg, cs, pt, ch, hs, pr, mr, iv, mem] = await Promise.all([
     sb.from("worlds").select("*").eq("id", id).single(),
     sb.from("regions").select("*").eq("world_id", id).order("name"),
     sb.from("constituencies").select("id,region_id,name,population").eq("world_id", id),
@@ -209,15 +209,16 @@ async function worldView() {
     sb.from("presidencies").select("*").eq("world_id", id).order("term_start_year", { ascending: false }),
     sb.from("world_members").select("role").eq("world_id", id).eq("user_id", session.user.id).maybeSingle(),
     sb.from("world_invites").select("*").eq("world_id", id).order("created_at", { ascending: false }),
+    sb.rpc("list_members", { p_world: id }),
   ]);
-  const err = [w, rg, cs, pt, ch, hs, pr, mr, iv].find((x) => x.error);
+  const err = [w, rg, cs, pt, ch, hs, pr, mr, iv, mem].find((x) => x.error);
   if (err) { state.worldId = null; notice("err", err.error.message); return lobbyView(); }
   const world = w.data, regions = rg.data, parties = pt.data, chars = ch.data, d = world.data, k = d.constitution;
   const me = chars.find((c) => c.owner_id === session.user.id && c.kind === "candidate");
   const partyById = Object.fromEntries(parties.map((p) => [p.id, p]));
   const regionById = Object.fromEntries(regions.map((r) => [r.id, r]));
   const isOwner = mr.data?.role === "owner";
-  const tabs = [["nation", "Nation"], ["states", "States"], ["parties", "Parties"], ["candidates", "Candidates"], ["history", "History"], ["me", me ? "My campaign" : "Run for president"]];
+  const tabs = [["nation", "Nation"], ["states", "States"], ["parties", "Parties"], ["candidates", "Candidates"], ["members", "Players"], ["history", "History"], ["me", me ? "My campaign" : "Run for president"]];
   if (isOwner) tabs.push(["invite", "Invites"]);
   if (state.tab === "invite" && !isOwner) state.tab = "nation";
 
@@ -249,6 +250,10 @@ async function worldView() {
     body = `<div class="grid">${cands.map((c) => `<div class="panel" style="border-top:3px solid ${hex(partyById[c.party_id]?.colour)}"><h3>${esc(c.name)}</h3><p class="muted">${c.is_ai ? "AI candidate" : "Human player"} · ${esc(partyById[c.party_id]?.name || "Independent")}</p>
       <p>${esc(c.background)}. ${esc(c.personality)}.</p><p class="muted">Strength: ${esc(c.strengths)}<br>Weakness: ${esc(c.weaknesses)}</p></div>`).join("")}</div>
     <h3>Journalists</h3><div class="panel">${chars.filter((c) => c.kind === "journalist").map((c) => `<p>${esc(c.name)} <span class="muted">— ${esc(regionById[c.region_id]?.name || "")}</span></p>`).join("")}</div>`;
+  } else if (state.tab === "members") {
+    const list = mem.data || [];
+    body = `<div class="panel"><h3>Players in ${esc(d.country)}</h3>${list.map((m) => `<div class="row" style="justify-content:space-between;border-bottom:1px solid var(--navy3);padding:.5rem 0"><div>${esc(m.display_name)}${m.user_id === session.user.id ? ' <span class="muted">(you)</span>' : ""}${m.role === "owner" ? '<span class="badge">Owner</span>' : ""}<div class="muted">${m.has_candidate ? "Presidential candidate" : "Not running yet"} · joined ${esc(new Date(m.joined_at).toLocaleDateString())}</div></div>${isOwner && m.user_id !== session.user.id ? `<button class="ghost" data-mk="${esc(m.user_id)}" data-nm="${esc(m.display_name)}">Make owner</button>` : ""}</div>`).join("") || '<p class="muted">No players found.</p>'}
+      ${isOwner ? `<p class="muted" style="margin-top:.75rem">${list.length < 2 ? "You are the only player. Invite someone, then hand over ownership if you want to leave." : "To leave this nation, first hand over ownership to another player. You will then become an ordinary member and can leave."}</p>` : ""}</div>`;
   } else if (state.tab === "history") {
     const presidents = pr.data || [], events = hs.data || [];
     body = `<div class="panel"><h3>Presidents of ${esc(d.country)}</h3>${presidents.length ? presidents.map((p) => `<p>${esc(p.president_name)} <span class="muted">${esc(p.party_name || "")} · year ${esc(p.term_start_year)}${p.term_end_year ? "–" + esc(p.term_end_year) : " – present"}</span></p>`).join("") : '<p class="muted">No president has held office yet. The first election decides this.</p>'}</div>
@@ -288,6 +293,9 @@ async function worldView() {
   app.querySelectorAll("[data-rv]").forEach((b) => (b.onclick = () => guard(b, async () => {
     const { error } = await sb.rpc("revoke_invite", { p_invite: b.dataset.rv }); if (error) throw error; notice("ok", "Invite revoked."); await worldView(); })));
   app.querySelectorAll("[data-cp]").forEach((b) => (b.onclick = async () => { try { await navigator.clipboard.writeText(b.dataset.cp); b.textContent = "Copied"; } catch { b.textContent = b.dataset.cp; } }));
+  app.querySelectorAll("[data-mk]").forEach((b) => (b.onclick = () => {
+    if (!confirm(`Hand over ownership of this nation to ${b.dataset.nm}? You will become an ordinary member.`)) return;
+    guard(b, async () => { const { error } = await sb.rpc("transfer_ownership", { p_world: id, p_new_owner: b.dataset.mk }); if (error) throw error; notice("ok", `${b.dataset.nm} is now the owner.`); await worldView(); }); }));
   const pf = $("#pf"), cf = $("#cf");
   if (pf) pf.onsubmit = (e) => { e.preventDefault(); guard(e.submitter, async () => {
     const { error } = await sb.rpc("create_party", { p_world_id: id, p_name: $("#pn").value, p_abbr: $("#pa").value, p_colour: $("#pc").value, p_ideology: $("#pi").value, p_philosophy: $("#pp").value, p_symbol: $("#ps").value });
