@@ -163,13 +163,22 @@ async function openedView(el) {
 
 // ---------- reports ----------
 async function reportsView(el) {
-  await loadNames();
+  const players = await loadNames();
+  const { data: worlds } = await sb.rpc("admin_list_worlds");
   const { data, error } = await sb.from("player_reports").select("*").order("created_at", { ascending: false }).limit(100); if (error) throw error;
   el.innerHTML = `${msgsView ? `<div class="panel"><h3>Messages (access recorded)</h3>${msgsView.length ? msgsView.map((m) => `<p><strong>${nm(m.sender_id)}</strong> to ${nm(m.recipient_id)} <span class="muted">${esc(when(m.created_at))}</span><br>${esc(m.body)}</p>`).join("") : '<p class="muted">No messages found.</p>'}<button class="ghost" id="hide">Hide messages</button></div>` : ""}
+  <div class="panel"><h3>Raise a security incident</h3><p class="muted warn">An incident you raise cannot unlock any private message until the system owner approves it. Raising and approving are both logged.</p>
+  <form id="incf"><label for="in_w">Nation</label><select id="in_w">${(worlds || []).map((w) => `<option value="${esc(w.id)}">${esc(w.name)} (${esc(String(w.id).slice(0, 8))})</option>`).join("")}</select>
+  <label for="in_u">Player concerned</label><select id="in_u">${players.map((p) => `<option value="${esc(p.id)}">${esc(p.display_name)}</option>`).join("")}</select>
+  <label for="in_d">What is the concern? (10+ characters)</label><input id="in_d" required minlength="10" maxlength="1000">
+  <div style="margin-top:1rem"><button type="submit">File incident</button></div></form></div>
   <div class="panel scroll"><h2>Reports</h2><p class="muted warn">Message content can only be read for an open report, with a reason. Each reading is logged separately.</p>
   <table><tr><th>Filed</th><th>Type</th><th>Who</th><th>Details</th><th>Status</th><th></th></tr>
   ${data.map((r) => `<tr><td>${esc(when(r.created_at))}</td><td>${esc(r.category)}<br><span class="muted">${esc(r.source)}</span></td><td>By ${nm(r.reporter_id)}<br>About ${nm(r.reported_user_id)}</td><td>${esc(r.description)}</td><td>${esc(r.status)}${r.source === "admin" ? (r.approved_by ? "<br>approved" : "<br>needs owner approval") : ""}</td>
   <td>${r.status !== "open" ? "" : `<button class="ghost" data-rd="${esc(r.id)}">Read messages</button> <button class="ghost" data-rs="${esc(r.id)}">Resolve</button>${me.is_owner && r.source === "admin" && !r.approved_by ? ` <button data-ap="${esc(r.id)}">Approve</button>` : ""}`}</td></tr>`).join("") || '<tr><td colspan="6" class="muted">No reports.</td></tr>'}</table></div>`;
+  const incf = $("#incf");
+  if (incf) incf.onsubmit = (e) => { e.preventDefault(); const r = ask("Why are you raising this incident?"); if (!r) return;
+    act(e.submitter, async () => { const { error: er } = await sb.rpc("admin_file_incident", { p_world: $("#in_w").value, p_user: $("#in_u").value, p_description: $("#in_d").value.trim(), p_reason: r }); if (er) throw er; flash = { t: "ok", m: "Incident filed. It needs owner approval before any messages can be read." }; }); };
   const hide = $("#hide"); if (hide) hide.onclick = () => { msgsView = null; render(); };
   el.querySelectorAll("[data-rd]").forEach((b) => (b.onclick = () => { const r = ask("Why must you read this conversation?"); if (!r) return;
     act(b, async () => { const { data: m, error: e } = await sb.rpc("admin_read_messages", { p_report: b.dataset.rd, p_reason: r }); if (e) throw e; msgsView = m; }); }));

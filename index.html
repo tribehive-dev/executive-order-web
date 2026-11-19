@@ -221,6 +221,7 @@ async function worldView() {
   const tabs = [["nation", "Nation"], ["states", "States"], ["parties", "Parties"], ["candidates", "Candidates"], ["members", "Players"], ["history", "History"], ["me", me ? "My campaign" : "Run for president"]];
   if (isOwner) tabs.push(["invite", "Invites"]);
   if (state.tab === "invite" && !isOwner) state.tab = "nation";
+  if ((state.tab === "chat" || state.tab === "report") && !state.peer) state.tab = "members";
 
   let body = "";
   if (state.tab === "nation") {
@@ -252,8 +253,25 @@ async function worldView() {
     <h3>Journalists</h3><div class="panel">${chars.filter((c) => c.kind === "journalist").map((c) => `<p>${esc(c.name)} <span class="muted">— ${esc(regionById[c.region_id]?.name || "")}</span></p>`).join("")}</div>`;
   } else if (state.tab === "members") {
     const list = mem.data || [];
-    body = `<div class="panel"><h3>Players in ${esc(d.country)}</h3>${list.map((m) => `<div class="row" style="justify-content:space-between;border-bottom:1px solid var(--navy3);padding:.5rem 0"><div>${esc(m.display_name)}${m.user_id === session.user.id ? ' <span class="muted">(you)</span>' : ""}${m.role === "owner" ? '<span class="badge">Owner</span>' : ""}<div class="muted">${m.has_candidate ? "Presidential candidate" : "Not running yet"} · joined ${esc(new Date(m.joined_at).toLocaleDateString())}</div></div>${isOwner && m.user_id !== session.user.id ? `<button class="ghost" data-mk="${esc(m.user_id)}" data-nm="${esc(m.display_name)}">Make owner</button>` : ""}</div>`).join("") || '<p class="muted">No players found.</p>'}
+    body = `<div class="panel"><h3>Players in ${esc(d.country)}</h3>${list.map((m) => `<div class="row" style="justify-content:space-between;border-bottom:1px solid var(--navy3);padding:.5rem 0"><div>${esc(m.display_name)}${m.user_id === session.user.id ? ' <span class="muted">(you)</span>' : ""}${m.role === "owner" ? '<span class="badge">Owner</span>' : ""}<div class="muted">${m.has_candidate ? "Presidential candidate" : "Not running yet"} · joined ${esc(new Date(m.joined_at).toLocaleDateString())}</div></div>${m.user_id !== session.user.id ? `<div class="row">${isOwner ? `<button class="ghost" data-mk="${esc(m.user_id)}" data-nm="${esc(m.display_name)}">Make owner</button>` : ""}<button class="ghost" data-msg="${esc(m.user_id)}" data-nm="${esc(m.display_name)}">Message</button><button class="ghost" data-rep="${esc(m.user_id)}" data-nm="${esc(m.display_name)}">Report</button></div>` : ""}</div>`).join("") || '<p class="muted">No players found.</p>'}
       ${isOwner ? `<p class="muted" style="margin-top:.75rem">${list.length < 2 ? "You are the only player. Invite someone, then hand over ownership if you want to leave." : "To leave this nation, first hand over ownership to another player. You will then become an ordinary member and can leave."}</p>` : ""}</div>`;
+  } else if (state.tab === "chat") {
+    const mine = session.user.id, other = state.peer.id;
+    const res = await sb.from("messages").select("*").eq("world_id", id)
+      .or(`and(sender_id.eq.${mine},recipient_id.eq.${other}),and(sender_id.eq.${other},recipient_id.eq.${mine})`).order("created_at", { ascending: true }).limit(100);
+    const msgs = res.error ? [] : res.data || [];
+    body = `<div class="panel"><button class="ghost" id="cb">Back to players</button><h3 style="margin-top:.75rem">Conversation with ${esc(state.peer.name)}</h3>
+      <p class="muted">Private between the two of you. If either of you reports the other, an administrator may read this conversation, and each reading is recorded with a reason in a log the system owner reviews.</p>
+      ${res.error ? `<div class="msg err">${esc(res.error.message)}</div>` : ""}
+      ${msgs.map((m) => `<p><strong>${m.sender_id === mine ? "You" : esc(state.peer.name)}</strong> <span class="muted">${esc(new Date(m.created_at).toLocaleString())}</span><br>${esc(m.body)}</p>`).join("") || '<p class="muted">No messages yet. Say hello.</p>'}
+      <form id="mf"><label for="mb">Your message (up to 1000 characters)</label><textarea id="mb" required maxlength="1000" rows="3"></textarea>
+      <div class="row" style="margin-top:.75rem"><button type="submit">Send</button><button type="button" class="ghost" id="mrf">Refresh</button></div></form></div>`;
+  } else if (state.tab === "report") {
+    body = `<div class="panel"><h3>Report ${esc(state.peer.name)}</h3>
+      <p class="muted">Tell us what happened. If an administrator investigates, they may read your private messages with this player. Each reading is recorded with a reason in a log the system owner reviews.</p>
+      <form id="rpf"><label for="rc">What kind of problem?</label><select id="rc"><option value="abuse">Abuse</option><option value="harassment">Harassment</option><option value="cheating">Cheating</option><option value="security">Security concern</option><option value="other">Something else</option></select>
+      <label for="rd">What happened? (10 to 1000 characters)</label><textarea id="rd" required minlength="10" maxlength="1000" rows="4"></textarea>
+      <div class="row" style="margin-top:1rem"><button type="submit">Send report</button><button type="button" class="ghost" id="rbk">Cancel</button></div></form></div>`;
   } else if (state.tab === "history") {
     const presidents = pr.data || [], events = hs.data || [];
     body = `<div class="panel"><h3>Presidents of ${esc(d.country)}</h3>${presidents.length ? presidents.map((p) => `<p>${esc(p.president_name)} <span class="muted">${esc(p.party_name || "")} · year ${esc(p.term_start_year)}${p.term_end_year ? "–" + esc(p.term_end_year) : " – present"}</span></p>`).join("") : '<p class="muted">No president has held office yet. The first election decides this.</p>'}</div>
@@ -296,6 +314,19 @@ async function worldView() {
   app.querySelectorAll("[data-mk]").forEach((b) => (b.onclick = () => {
     if (!confirm(`Hand over ownership of this nation to ${b.dataset.nm}? You will become an ordinary member.`)) return;
     guard(b, async () => { const { error } = await sb.rpc("transfer_ownership", { p_world: id, p_new_owner: b.dataset.mk }); if (error) throw error; notice("ok", `${b.dataset.nm} is now the owner.`); await worldView(); }); }));
+  app.querySelectorAll("[data-msg]").forEach((b) => (b.onclick = () => { state.peer = { id: b.dataset.msg, name: b.dataset.nm }; state.tab = "chat"; worldView(); }));
+  app.querySelectorAll("[data-rep]").forEach((b) => (b.onclick = () => { state.peer = { id: b.dataset.rep, name: b.dataset.nm }; state.tab = "report"; worldView(); }));
+  const cb = $("#cb"); if (cb) cb.onclick = () => { state.tab = "members"; worldView(); };
+  const rbk = $("#rbk"); if (rbk) rbk.onclick = () => { state.tab = "members"; worldView(); };
+  const mrf = $("#mrf"); if (mrf) mrf.onclick = () => worldView();
+  const mf = $("#mf");
+  if (mf) mf.onsubmit = (e) => { e.preventDefault(); guard(e.submitter, async () => {
+    const { error } = await sb.rpc("send_message", { p_world: id, p_recipient: state.peer.id, p_body: $("#mb").value });
+    if (error) throw error; await worldView(); }); };
+  const rpf = $("#rpf");
+  if (rpf) rpf.onsubmit = (e) => { e.preventDefault(); guard(e.submitter, async () => {
+    const { error } = await sb.rpc("file_report", { p_world: id, p_reported: state.peer.id, p_category: $("#rc").value, p_description: $("#rd").value });
+    if (error) throw error; notice("ok", "Report sent. An administrator will review it."); state.tab = "members"; await worldView(); }); };
   const pf = $("#pf"), cf = $("#cf");
   if (pf) pf.onsubmit = (e) => { e.preventDefault(); guard(e.submitter, async () => {
     const { error } = await sb.rpc("create_party", { p_world_id: id, p_name: $("#pn").value, p_abbr: $("#pa").value, p_colour: $("#pc").value, p_ideology: $("#pi").value, p_philosophy: $("#pp").value, p_symbol: $("#ps").value });
