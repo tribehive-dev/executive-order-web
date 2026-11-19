@@ -54,7 +54,8 @@ const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const hex = (c) => (/^#[0-9a-fA-F]{6}$/.test(c) ? c : "#888888");
 const fmt = (n) => Number(n).toLocaleString("en");
 const app = $("#app");
-let sb, session = null, profile = null, state = { worldId: null, tab: "nation", notice: null };
+let sb, session = null, profile = null, state = { worldId: null, tab: "nation", notice: null, recovery: /type=recovery/.test(location.hash) };
+{ const h = new URLSearchParams(location.hash.slice(1)); if (h.get("error_description")) { state.recovery = false; state.notice = { type: "err", text: "That link is invalid or has expired. Please request a new one." }; history.replaceState(null, "", location.pathname); } }
 
 if (SUPABASE_URL.startsWith("PASTE")) {
   app.innerHTML = '<div class="panel"><h2>Setup needed</h2><p>Open <code>config.js</code> and paste your Supabase URL and anon key.</p></div>';
@@ -64,7 +65,7 @@ async function init() {
   sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   const { data } = await sb.auth.getSession();
   session = data.session;
-  sb.auth.onAuthStateChange((_e, s) => { const changed = (s?.user?.id) !== (session?.user?.id); session = s; if (changed) route(); });
+  sb.auth.onAuthStateChange((ev, s) => { if (ev === "PASSWORD_RECOVERY") state.recovery = true; const changed = (s?.user?.id) !== (session?.user?.id); session = s; if (changed || ev === "PASSWORD_RECOVERY") route(); });
   route();
 }
 
@@ -73,6 +74,7 @@ function noticeHtml() { const n = state.notice; state.notice = null; return n ? 
 async function guard(btn, fn) { btn.disabled = true; try { await fn(); } catch (e) { notice("err", e.message || "Something went wrong."); await route(); } finally { btn.disabled = false; } }
 
 async function route() {
+  if (state.recovery && session) return recoveryView();
   if (!session) { $("#who").innerHTML = ""; return authView(); }
   const { data } = await sb.from("profiles").select("*").eq("id", session.user.id).maybeSingle();
   profile = data;
@@ -92,8 +94,9 @@ function authView(mode = "in") {
     <label>Password (8+ characters)</label><input id="pw" type="password" required minlength="8" autocomplete="${mode === "in" ? "current-password" : "new-password"}">
     <div class="row" style="margin-top:1rem"><button type="submit">${mode === "in" ? "Sign in" : "Create account"}</button>
     <button type="button" class="ghost" id="sw">${mode === "in" ? "New here? Create account" : "Have an account? Sign in"}</button></div>
-  </form></div>`;
+  </form>${mode === "in" ? '<p style="margin:.75rem 0 0"><button type="button" class="ghost" id="fp">Forgot password?</button></p>' : ""}</div>`;
   $("#sw").onclick = () => authView(mode === "in" ? "up" : "in");
+  const fp = $("#fp"); if (fp) fp.onclick = () => forgotView();
   $("#f").onsubmit = (e) => { e.preventDefault(); guard(e.submitter, async () => {
     const email = $("#em").value.trim(), password = $("#pw").value;
     if (mode === "in") { const { error } = await sb.auth.signInWithPassword({ email, password }); if (error) throw error; }
@@ -102,6 +105,36 @@ function authView(mode = "in") {
       if (error) throw error;
       if (!data.session) { notice("ok", "Account created. Check your email to confirm, then sign in."); return authView("in"); }
     }
+  }); };
+}
+
+function forgotView() {
+  app.innerHTML = `${noticeHtml()}<h1>Reset your password</h1><p class="muted">Enter your account email. If it has an account, we will send a reset link.</p>
+  <div class="panel"><form id="rf"><label for="re">Email</label><input id="re" type="email" required autocomplete="email">
+  <div class="row" style="margin-top:1rem"><button type="submit">Send reset link</button><button type="button" class="ghost" id="rb">Back to sign in</button></div></form></div>`;
+  $("#rb").onclick = () => authView("in");
+  $("#rf").onsubmit = (e) => { e.preventDefault(); guard(e.submitter, async () => {
+    const redirectTo = location.origin + location.pathname.replace(/index\.html$/, "");
+    const { error } = await sb.auth.resetPasswordForEmail($("#re").value.trim(), { redirectTo });
+    if (error) throw error;
+    notice("ok", "If that email has an account, a reset link is on its way. Check your inbox and spam folder.");
+    authView("in");
+  }); };
+}
+
+function recoveryView() {
+  $("#who").innerHTML = "";
+  app.innerHTML = `${noticeHtml()}<h1>Choose a new password</h1>
+  <div class="panel"><form id="nf"><label for="n1">New password (8+ characters)</label><input id="n1" type="password" required minlength="8" autocomplete="new-password">
+  <label for="n2">Repeat new password</label><input id="n2" type="password" required minlength="8" autocomplete="new-password">
+  <div style="margin-top:1rem"><button type="submit">Save new password</button></div></form></div>`;
+  $("#nf").onsubmit = (e) => { e.preventDefault(); guard(e.submitter, async () => {
+    const a = $("#n1").value;
+    if (a !== $("#n2").value) throw new Error("The two passwords do not match.");
+    const { error } = await sb.auth.updateUser({ password: a });
+    if (error) throw error;
+    state.recovery = false; history.replaceState(null, "", location.pathname);
+    notice("ok", "Your password has been changed."); await route();
   }); };
 }
 
