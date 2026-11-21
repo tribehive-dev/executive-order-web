@@ -272,12 +272,31 @@ async function auditView(el) {
   el.innerHTML = `<div class="panel"><h2>${me.is_owner ? "Audit log: all administrators" : "Your audit log"}</h2>
   <p class="muted">Append-only and hash-chained. Entries cannot be edited or deleted.</p>
   ${me.is_owner ? '<div class="row"><button class="ghost" id="ver">Verify chain</button><button class="ghost" id="head">Show latest hash</button></div><p id="vr" class="muted"></p>' : ""}</div>
+  ${me.is_owner ? `<div class="panel"><h3>Check a saved fingerprint</h3><p class="muted">Paste the entry number and hash you saved earlier. This proves that entry has not been changed or removed since you saved it.</p>
+  <form id="fpf"><label for="fp_n">Entry number</label><input id="fp_n" inputmode="numeric" required>
+  <label for="fp_h">Saved hash (64 characters)</label><input id="fp_h" required maxlength="64" autocapitalize="off" autocomplete="off" spellcheck="false">
+  <div style="margin-top:1rem"><button type="submit">Check</button></div></form><p id="fpr" class="muted"></p></div>` : ""}
   <div class="panel scroll"><table><tr><th>#</th><th>When</th><th>Admin</th><th>Action</th><th>Reason</th><th>Target</th></tr>
   ${data.map((r) => `<tr><td>${esc(r.seq)}</td><td>${esc(when(r.created_at))}</td><td>${nm(r.admin_id)}</td><td>${esc(r.action)}</td><td>${esc(r.reason)}</td><td>${r.target_user_id ? "Player " + nm(r.target_user_id) : ""}${r.world_id ? "<br><code>" + esc(r.world_id) + "</code>" : ""}</td></tr>`).join("") || '<tr><td colspan="6" class="muted">No entries.</td></tr>'}</table></div>`;
   const ver = $("#ver");
   if (ver) ver.onclick = async () => { const { data: bad, error: e } = await sb.rpc("verify_audit_chain"); $("#vr").textContent = e ? e.message : bad === null ? "Chain intact: no tampering detected." : `Chain BROKEN at entry #${bad}.`; };
   const head = $("#head");
-  if (head) head.onclick = async () => { const { data: h, error: e } = await sb.rpc("audit_head"); $("#vr").textContent = e ? e.message : h && h[0] ? `Latest entry #${h[0].seq}, hash ${h[0].row_hash}. Save this somewhere safe.` : "The log is empty."; };
+  if (head) head.onclick = async () => { const { data: h, error: e } = await sb.rpc("audit_head"); const vr = $("#vr");
+    if (e || !h || !h[0]) { vr.textContent = e ? e.message : "The log is empty."; return; }
+    const line = `${new Date().toISOString().slice(0, 10)} | #${h[0].seq} | ${h[0].row_hash}`;
+    vr.textContent = `Save this line outside Supabase (email it to yourself): ${line}`;
+    const b = document.createElement("button"); b.className = "ghost"; b.id = "cpy"; b.textContent = "Copy line";
+    b.onclick = async () => { try { await navigator.clipboard.writeText(line); b.textContent = "Copied"; } catch { b.textContent = "Copy failed: select the text above"; } };
+    vr.appendChild(document.createElement("br")); vr.appendChild(b); };
+  const fpf = $("#fpf");
+  if (fpf) fpf.onsubmit = async (e) => { e.preventDefault(); const out = $("#fpr");
+    const n = Number($("#fp_n").value.trim()), h = $("#fp_h").value.trim().toLowerCase();
+    if (!Number.isInteger(n) || n < 1) { out.textContent = "Enter the entry number as a whole number, for example 34."; return; }
+    if (!/^[0-9a-f]{64}$/.test(h)) { out.textContent = "The hash must be 64 characters: digits 0 to 9 and letters a to f. Paste it exactly as you saved it."; return; }
+    const { data: row, error: er } = await sb.from("admin_audit_log").select("seq,row_hash").eq("seq", n).maybeSingle();
+    out.textContent = er ? er.message : !row ? `NOT FOUND: there is no entry #${n}. If you saved this number earlier, this is a serious warning: the log may have been altered.`
+      : row.row_hash === h ? `MATCH: entry #${n} is exactly as it was when you saved it.`
+      : `DOES NOT MATCH: entry #${n} has a different hash from the one you saved. This is a serious warning: the log may have been altered.`; };
 }
 </script>
 </body>
